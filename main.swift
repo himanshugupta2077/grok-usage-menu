@@ -245,6 +245,38 @@ func loadReading() throws -> Reading {
     }
 }
 
+func readingCacheURL() -> URL {
+    FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Grok Usage/reading.json")
+}
+
+func loadCachedReading() -> Reading? {
+    let url = readingCacheURL()
+    guard let data = try? Data(contentsOf: url),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let percent = (root["percent"] as? NSNumber)?.intValue,
+          let endRaw = root["end"] as? String,
+          let end = parseDate(endRaw)
+    else { return nil }
+    return Reading(percent: min(max(percent, 0), 999), end: end)
+}
+
+func storeCachedReading(_ reading: Reading) {
+    let url = readingCacheURL()
+    try? FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    let root: [String: Any] = [
+        "percent": reading.percent,
+        "end": formatExpiry(reading.end),
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted]) else {
+        return
+    }
+    try? data.write(to: url, options: .atomic)
+}
+
 func compactLabel(percent: Int, end: Date, now: Date = Date()) -> String {
     let seconds = end.timeIntervalSince(now)
     if seconds < 24 * 3600 {
@@ -288,17 +320,22 @@ func grokIcon() -> NSImage {
 
 final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var status: NSStatusItem!
+    let menu = NSMenu()
     let usageItem = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
     let timeItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     var reading: Reading?
     var lastError: String?
     var lastNetwork = Date.distantPast
     var busy = false
+    var menuOpen = false
+    var needsFresh = true
+    var shownTitle: String?
     var timer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.set(true, forKey: "NSStatusItem Visible GrokUsage")
         UserDefaults.standard.set(1100.0, forKey: "NSStatusItem Preferred Position GrokUsage")
+        reading = loadCachedReading()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.autosaveName = "GrokUsage"
         status.isVisible = true
@@ -306,7 +343,6 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         usageItem.isEnabled = false
         timeItem.isEnabled = false
 
-        let menu = NSMenu()
         menu.delegate = self
         menu.addItem(usageItem)
         menu.addItem(timeItem)
@@ -321,38 +357,80 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let button = status.button {
             button.image = grokIcon()
             button.imagePosition = .imageLeft
-            button.title = " …"
         }
+        // Paint before the menu is attached. A later title change is easy for
+        // AppKit to drop until the menu opens, which left the bar on "-".
+        paint(force: true)
         status.menu = menu
+        paint(force: true)
 
         tick()
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             self?.tick()
+        }
+        for delay in [1.2, 3.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.paint(force: true)
+            }
         }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        if Date().timeIntervalSince(lastNetwork) > 60 {
+        menuOpen = true
+        if needsFresh || Date().timeIntervalSince(lastNetwork) > 60 {
             fetch()
         }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuOpen = false
+        paint(force: true)
     }
 
     func tick() {
         paint()
-        if Date().timeIntervalSince(lastNetwork) >= networkEvery {
+        let interval: TimeInterval = needsFresh ? 15 : networkEvery
+        if Date().timeIntervalSince(lastNetwork) >= interval {
             fetch()
         }
     }
 
-    func paint() {
+    func barTitle() -> String {
         if let reading {
-            status.button?.title = " " + compactLabel(percent: reading.percent, end: reading.end)
+            return " " + compactLabel(percent: reading.percent, end: reading.end)
+        }
+        return " …"
+    }
+
+    // Assigning status.menu freezes the visible title on recent macOS until the
+    // menu is opened. Drop the menu, set the title and width, then put it back.
+    func applyTitle(_ title: String, force: Bool) {
+        guard let button = status.button else { return }
+        if !force, title == shownTitle, status.menu != nil { return }
+        let restoreMenu = status.menu != nil && !menuOpen
+        if restoreMenu {
+            status.menu = nil
+        }
+        status.length = NSStatusItem.variableLength
+        button.title = title
+        let font = button.font ?? NSFont.menuBarFont(ofSize: 0)
+        let text = (title as NSString).size(withAttributes: [.font: font]).width
+        let width = text + (button.image?.size.width ?? 16) + 20
+        status.length = width
+        if restoreMenu || status.menu == nil {
+            status.menu = menu
+        }
+        shownTitle = title
+    }
+
+    func paint(force: Bool = false) {
+        applyTitle(barTitle(), force: force)
+        if let reading {
             usageItem.title = "\(reading.percent)% used"
             timeItem.title = detailLabel(end: reading.end)
             timeItem.isHidden = false
-        } else if let lastError {
-            status.button?.title = " —"
-            usageItem.title = lastError
+        } else {
+            usageItem.title = lastError ?? "Loading…"
             timeItem.isHidden = true
         }
     }
@@ -370,6 +448,8 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 case .success(let reading):
                     self.reading = reading
                     self.lastError = nil
+                    self.needsFresh = false
+                    storeCachedReading(reading)
                 case .failure(let error):
                     if self.reading == nil {
                         self.lastError = error.localizedDescription

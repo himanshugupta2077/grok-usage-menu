@@ -28,9 +28,9 @@ cd grok-usage-menu
 ./install.sh
 ```
 
-`install.sh` builds `~/Applications/Grok Usage.app`, signs it for local use, and starts it at login. The menu bar has no Dock icon.
+`install.sh` builds `~/Applications/Grok Usage.app`, signs it for local use, and opens it. The menu bar has no Dock icon. It does not add a login item. On this Mac, `~/.local/bin/login-apps.sh` opens it after login, with the other menu-bar apps.
 
-To build without the login item:
+To build and open it yourself:
 
 ```bash
 ./build.sh
@@ -57,7 +57,7 @@ GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
 
 The bracketed time is the time left until `currentPeriod.end`. The menu shows that remainder exactly, for example `3d 20h left`.
 
-The item refreshes about every five minutes, and again when the menu opens if the last fetch is more than a minute old. If the Grok access token is near expiry, or the billing call returns 401, it refreshes the token and writes the new session back to `~/.grok/auth.json` so `grok` stays logged in.
+The item refreshes about every five minutes, and again when the menu opens if the last fetch is more than a minute old. The last good reading is saved in `~/Library/Application Support/Grok Usage/reading.json` (percent and reset time only) so the bar can show a number before the network returns. If the first fetch fails, it retries about every 15 seconds until one succeeds. If the Grok access token is near expiry, or the billing call returns 401, it refreshes the token and writes the new session back to `~/.grok/auth.json` so `grok` stays logged in.
 
 A terminal check, without opening the menu bar:
 
@@ -69,4 +69,4 @@ Run that from `~/Applications` after building. It prints the menu-bar label and 
 
 ## Privacy
 
-The only files it reads and writes are `~/.grok/auth.json`. The only network calls are the Grok token refresh and the billing request. It does not send usage anywhere else.
+The only session file it reads and writes is `~/.grok/auth.json`. It also writes the last percent and reset time to `~/Library/Application Support/Grok Usage/reading.json`. The only network calls are the Grok token refresh and the billing request. It does not send usage anywhere else.
