@@ -277,16 +277,76 @@ func storeCachedReading(_ reading: Reading) {
     try? data.write(to: url, options: .atomic)
 }
 
-func compactLabel(percent: Int, end: Date, now: Date = Date()) -> String {
+enum TimeBand {
+    case green, yellow, orange, red
+
+    static func forSeconds(_ seconds: TimeInterval) -> TimeBand {
+        let hours = seconds / 3600
+        if hours >= 96 { return .green }
+        if hours >= 48 { return .yellow }
+        if hours >= 12 { return .orange }
+        return .red
+    }
+
+    var color: NSColor {
+        NSColor(name: nil, dynamicProvider: { appearance in
+            let dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            switch self {
+            case .green:
+                return dark
+                    ? NSColor(srgbRed: 0.35, green: 0.86, blue: 0.45, alpha: 1)
+                    : NSColor(srgbRed: 0.00, green: 0.50, blue: 0.22, alpha: 1)
+            case .yellow:
+                return dark
+                    ? NSColor(srgbRed: 0.98, green: 0.84, blue: 0.30, alpha: 1)
+                    : NSColor(srgbRed: 0.62, green: 0.42, blue: 0.00, alpha: 1)
+            case .orange:
+                return dark
+                    ? NSColor(srgbRed: 1.00, green: 0.58, blue: 0.22, alpha: 1)
+                    : NSColor(srgbRed: 0.80, green: 0.36, blue: 0.00, alpha: 1)
+            case .red:
+                return dark
+                    ? NSColor(srgbRed: 1.00, green: 0.38, blue: 0.34, alpha: 1)
+                    : NSColor(srgbRed: 0.78, green: 0.12, blue: 0.14, alpha: 1)
+            }
+        })
+    }
+}
+
+func timeLeftToken(end: Date, now: Date = Date()) -> (token: String, seconds: TimeInterval) {
     let seconds = end.timeIntervalSince(now)
     if seconds < 24 * 3600 {
         let hours = Int(seconds / 3600)
-        if hours >= 1 { return "\(percent)% [\(hours)H]" }
+        if hours >= 1 { return ("\(hours)H", seconds) }
         let minutes = max(0, Int(seconds / 60))
-        return "\(percent)% [\(minutes)M]"
+        return ("\(minutes)M", seconds)
     }
     let days = Int((seconds / 86_400).rounded())
-    return "\(percent)% [\(max(days, 1))D]"
+    return ("\(max(days, 1))D", seconds)
+}
+
+func compactLabel(percent: Int, end: Date, now: Date = Date()) -> String {
+    let time = timeLeftToken(end: end, now: now)
+    return "\(percent)% \(time.token)"
+}
+
+func barTitle(percent: Int, end: Date, now: Date = Date()) -> (text: NSAttributedString, signature: String) {
+    let time = timeLeftToken(end: end, now: now)
+    let band = TimeBand.forSeconds(time.seconds)
+    let menuFont = NSFont.menuBarFont(ofSize: 0)
+    let bold = NSFont.systemFont(ofSize: menuFont.pointSize, weight: .bold)
+    let title = NSMutableAttributedString(
+        string: "\(percent)% ",
+        attributes: [.font: menuFont]
+    )
+    title.append(NSAttributedString(
+        string: time.token,
+        attributes: [
+            .font: bold,
+            .foregroundColor: band.color,
+        ]
+    ))
+    return (title, "\(percent)% \(time.token) \(band)")
 }
 
 func detailLabel(end: Date, now: Date = Date()) -> String {
@@ -297,25 +357,6 @@ func detailLabel(end: Date, now: Date = Date()) -> String {
     if days > 0 { return "\(days)d \(hours)h left" }
     if hours > 0 { return "\(hours)h \(minutes)m left" }
     return "\(minutes)m left"
-}
-
-func grokIcon() -> NSImage {
-    let size = NSSize(width: 16, height: 16)
-    if let url = Bundle.main.url(forResource: "grok", withExtension: "png"),
-       let image = NSImage(contentsOf: url) {
-        image.size = size
-        image.isTemplate = true
-        return image
-    }
-    let image = NSImage(size: size, flipped: false) { rect in
-        let path = NSBezierPath(ovalIn: rect.insetBy(dx: 1.5, dy: 1.5))
-        path.lineWidth = 1.6
-        NSColor.black.setStroke()
-        path.stroke()
-        return true
-    }
-    image.isTemplate = true
-    return image
 }
 
 final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -355,8 +396,7 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quitItem)
 
         if let button = status.button {
-            button.image = grokIcon()
-            button.imagePosition = .imageLeft
+            button.image = nil
         }
         // Paint before the menu is attached. A later title change is easy for
         // AppKit to drop until the menu opens, which left the bar on "-".
@@ -395,36 +435,39 @@ final class MenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func barTitle() -> String {
+    func currentTitle() -> (text: NSAttributedString, signature: String) {
         if let reading {
-            return " " + compactLabel(percent: reading.percent, end: reading.end)
+            return barTitle(percent: reading.percent, end: reading.end)
         }
-        return " …"
+        let waiting = NSAttributedString(
+            string: "…",
+            attributes: [.font: NSFont.menuBarFont(ofSize: 0)]
+        )
+        return (waiting, "waiting")
     }
 
     // Assigning status.menu freezes the visible title on recent macOS until the
     // menu is opened. Drop the menu, set the title and width, then put it back.
-    func applyTitle(_ title: String, force: Bool) {
+    func applyTitle(_ title: NSAttributedString, signature: String, force: Bool) {
         guard let button = status.button else { return }
-        if !force, title == shownTitle, status.menu != nil { return }
+        if !force, signature == shownTitle, status.menu != nil { return }
         let restoreMenu = status.menu != nil && !menuOpen
         if restoreMenu {
             status.menu = nil
         }
         status.length = NSStatusItem.variableLength
-        button.title = title
-        let font = button.font ?? NSFont.menuBarFont(ofSize: 0)
-        let text = (title as NSString).size(withAttributes: [.font: font]).width
-        let width = text + (button.image?.size.width ?? 16) + 20
-        status.length = width
+        button.image = nil
+        button.attributedTitle = title
+        status.length = title.size().width + 12
         if restoreMenu || status.menu == nil {
             status.menu = menu
         }
-        shownTitle = title
+        shownTitle = signature
     }
 
     func paint(force: Bool = false) {
-        applyTitle(barTitle(), force: force)
+        let title = currentTitle()
+        applyTitle(title.text, signature: title.signature, force: force)
         if let reading {
             usageItem.title = "\(reading.percent)% used"
             timeItem.title = detailLabel(end: reading.end)

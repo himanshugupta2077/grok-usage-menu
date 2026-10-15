@@ -1,12 +1,12 @@
 # Grok Usage
 
-A small macOS menu-bar item for Grok Build weekly usage. It shows the Grok mark, the percent used, and the time left until the weekly reset.
+A small macOS menu-bar item for Grok Build weekly usage. It shows the percent used, then the time left until the weekly reset. The time left is bold. Its color follows how much time is left: green at 4 days or more, yellow from 2 days, orange from 12 hours, and red under 12 hours.
 
 ```
-45% [4D]
+45% 4D
 ```
 
-Days are rounded to the nearest day: `[7D]`, `[6D]`, and so on. Under 24 hours it switches to hours, such as `[5H]`. Under one hour it switches to minutes, such as `[40M]`.
+Days are rounded to the nearest day: `7D`, `6D`, and so on. Under 24 hours it switches to hours, such as `5H`. Under one hour it switches to minutes, such as `40M`.
 
 Click the item for the exact time left, **Refresh**, or **Quit**.
 
@@ -55,7 +55,7 @@ The percent is the weekly `creditUsagePercent` from the same billing call Grok B
 GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
 ```
 
-The bracketed time is the time left until `currentPeriod.end`. The menu shows that remainder exactly, for example `3d 20h left`.
+The bold time is the time left until `currentPeriod.end`. The menu shows that remainder exactly, for example `3d 20h left`.
 
 The item refreshes about every five minutes, and again when the menu opens if the last fetch is more than a minute old. The last good reading is saved in `~/Library/Application Support/Grok Usage/reading.json` (percent and reset time only) so the bar can show a number before the network returns. If the first fetch fails, it retries about every 15 seconds until one succeeds. If the Grok access token is near expiry, or the billing call returns 401, it refreshes the token and writes the new session back to `~/.grok/auth.json` so `grok` stays logged in.
 
